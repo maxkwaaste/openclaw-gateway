@@ -3,9 +3,11 @@ import { createBot, sendMessage, sendTypingAction } from './lib/telegram.mjs';
 import { processMessage, getPendingOperation, clearPendingOperation, executePendingOperation } from './lib/brain.mjs';
 import { loadConversation, addMessage, getMessages, persistConversation } from './lib/conversation.mjs';
 import { CONFIRMATION_PHRASES } from './lib/safety.mjs';
+import { startCron } from './lib/cron.mjs';
 
 async function main() {
   await loadConversation();
+  startCron();
 
   const bot = createBot(process.env.BOT_TOKEN);
   const allowedUser = Number(process.env.ALLOWED_USER_ID);
