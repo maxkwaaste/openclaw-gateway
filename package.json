@@ -1,0 +1,13 @@
+{
+  "name": "openclaw-gateway",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node gateway.mjs"
+  },
+  "dependencies": {
+    "ioredis": "^5.4.0",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
