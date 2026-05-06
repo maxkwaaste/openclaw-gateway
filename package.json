@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "ioredis": "^5.4.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "openai": "^6.36.0"
   }
 }
