@@ -33,80 +33,26 @@ Final text reply sent back to Telegram
 
 ## Brain
 
-### Primary: Claude CLI (`claude -p`)
+### Primary: DeepSeek V4 Flash
 
-- **Engine:** Claude CLI subprocess via stdin
-- **Model:** Whatever the Max subscription provides (currently Sonnet)
-- **Billing:** Anthropic Max subscription ($100/mo flat)
-- **Invocation:** `claude -p --output-format text` with system prompt + conversation piped to stdin
-- **Response format:** Raw JSON. Either `{"action":"reply","text":"..."}` or `{"action":"tool_call","tool":"...","args":{...}}`
-- **Tool chaining:** Up to 5 iterations per message. Each iteration spawns a fresh `claude -p`
-- **Latency:** 2-5s per spawn. Acceptable for mobile use.
+- **Engine:** DeepSeek V4 API via OpenAI SDK
+- **Model:** `deepseek-v4-flash`
+- **Billing:** Per-token. ~$2-5/mo at 50-100 messages/day
+- **Invocation:** `openai.chat.completions.create()` with tools parameter
+- **Response format:** Native OpenAI tool calling. Either text response or `tool_calls` array.
+- **Tool chaining:** Up to 5 iterations per message. Tool results fed back as `role: 'tool'` messages.
 
-### Fallback: Anthropic API (direct)
+### Escalation: DeepSeek V4 Pro
 
-If `claude -p` stops working (see Billing & Limits below), the brain switches to direct Anthropic API calls using the `@anthropic-ai/sdk` npm package. Same system prompt, same JSON contract, same tool chaining logic. The only change is the transport layer.
+Complex reasoning tasks escalate to V4 Pro via the `run_deep_think` tool. Same API, same SDK, different model parameter. Flash decides when to escalate.
 
-- **Model:** `claude-sonnet-4-6` (or latest Sonnet)
-- **Billing:** Per-token. Estimated $5-15/mo at 50-100 messages/day with prompt caching
-- **Auth:** `ANTHROPIC_API_KEY` env var
-- **Advantage:** Prompt caching works properly (unlike CLI subprocess where context compaction breaks cache prefixes). Reliable, no TTY hacks, no telemetry risk.
+- **Model:** `deepseek-v4-pro`
+- **Billing:** ~$0.435/M input, $0.87/M output
+- **Triggers:** User asks for deep analysis, multi-step reasoning, or says "think harder"
 
 ### Backend interface
 
-`brain.mjs` exports a single function: `ask(conversationHistory, systemPrompt) -> JSON`. The implementation behind that function is swappable. Current implementation spawns `claude -p`. Fallback implementation calls the Anthropic API. The gateway does not know or care which one is active.
-
-## Billing & Limits
-
-### What the research found
-
-An independent technical review (May 2026) evaluated whether subscription-based CLI tools can legally and practically serve as automated subprocess brains. Key findings:
-
-**Claude CLI (`claude -p`) -- high risk, actively being restricted:**
-
-- Anthropic is deploying a `--bare` flag that forces API key authentication for all non-interactive (`-p`) usage. This flag is slated to become the mandatory default, which would block subscription-funded headless calls entirely.
-- Anthropic's backend runs prompt classification heuristics that detect third-party automation harnesses. System prompts containing phrases like "personal assistant" combined with structured JSON tool schemas and 24/7 request patterns trigger HTTP 400 blocks.
-- Traffic flagged as third-party automation gets routed to an "Extra Usage" billing bucket, bypassing subscription limits.
-- Account termination for detected automation proxies is a documented enforcement action, not a theoretical risk.
-
-**OpenAI Codex CLI -- not viable as primary:**
-
-- April 2026: OpenAI replaced message-based limits with strict token-to-credit mapping. An agentic workflow doing 300+ inference loops/day (from 100 messages with tool chaining) exhausts Plus/Pro credits within days.
-- ToS explicitly prohibits programmatic data extraction outside the official metered API.
-
-**GitHub Copilot CLI -- insufficient volume:**
-
-- Pro+ tier caps at 1,500 premium requests/month. A 100 msg/day bot needs 3,000+/month minimum.
-
-**Google Gemini CLI -- unreliable throttling:**
-
-- Published limits are generous (2,000 requests/day) but aggressive unstated throttling kicks in well below that for burst-pattern automated traffic.
-
-**Poe API -- viable flat-rate alternative:**
-
-- Official API draws from subscription compute points (660,000/mo for ~$200/yr annual plan).
-- OpenAI-compatible HTTP endpoint. No CLI wrapping, no TTY hacks.
-- Supports tool calling across GPT-4o, Claude Sonnet, Gemini Pro.
-- ToS-compliant for programmatic use. This is the intended use case.
-- Risk: point budget is finite. Premium models burn points fast. Requires model routing (cheap model for triage, expensive for reasoning).
-
-### Cost comparison for 100 messages/day
-
-| Backend | Monthly cost | Reliability | ToS risk |
-|---------|-------------|-------------|----------|
-| `claude -p` (Max sub) | $100 flat | Degrading | High |
-| Anthropic API (Sonnet, cached) | ~$5-15 variable | High | None |
-| Anthropic API (Opus, cached) | ~$30-80 variable | High | None |
-| Poe API (annual plan) | ~$17 flat | Medium | None |
-| OpenAI API (GPT-4o) | ~$5-20 variable | High | None |
-
-### Decision
-
-**Phase 1 (now):** Ship with `claude -p`. It works today, Max already pays for Max. Get the product running.
-
-**Phase 2 (when `claude -p` breaks):** Switch to direct Anthropic API with prompt caching. The per-token cost at personal scale (50-100 msgs/day) is low enough that flat-rate subscription is not worth the reliability trade-off. The brain interface makes this a config change, not a rewrite.
-
-**Not pursued:** Poe API is a valid option but adds a third-party dependency between us and the model. Direct API access to Anthropic gives better model quality, lower latency, and full control over caching and context management.
+`brain.mjs` exports `processMessage(userMessage, conversationHistory)`. Internally uses the OpenAI SDK with DeepSeek base URL. The gateway does not know or care which model handles a given message.
 
 ## Tools
 
@@ -117,7 +63,7 @@ An independent technical review (May 2026) evaluated whether subscription-based 
 | `query_hubspot` | Read | Query HubSpot CRM (deals, contacts, pipeline) |
 | `check_review_queue` | Read | List pending items in the review queue |
 | `approve_draft` | Write | Approve a draft for sending |
-| `run_claude` | Read | Spawn Claude Opus for complex/heavy tasks |
+| `run_deep_think` | Read | Escalate to DeepSeek V4 Pro for complex reasoning |
 | `send_email_draft` | Write | Create email draft via MS365 |
 
 ### HubSpot actions
@@ -147,20 +93,22 @@ Write operations (`approve_draft`, `send_email_draft`) are never executed immedi
 - **Host:** M1 Pro (`100.85.64.20` via Tailscale)
 - **Process manager:** PM2 (`openclaw-gateway`, id 4)
 - **Node.js:** ESM modules
-- **Dependencies:** `node-telegram-bot-api`, `ioredis` (no LLM SDK until Phase 2)
+- **Dependencies:** `node-telegram-bot-api`, `ioredis`, `openai`
 - **Services required:** Redis, Open Brain API (port 9876), Review Dashboard (port 3040)
 
 ## Environment variables
 
 ```
+DEEPSEEK_API_KEY   DeepSeek API key
 BOT_TOKEN          Telegram bot token
 ALLOWED_USER_ID    Telegram user ID (Max)
-CLAUDE_PATH        Path to claude binary (/opt/homebrew/bin/claude)
 OPEN_BRAIN_URL     Open Brain API (http://localhost:9876)
 REVIEW_API         Review dashboard API (http://localhost:3040)
 REDIS_URL          Redis connection (redis://localhost:6379)
 HUBSPOT_TOKEN      HubSpot API token
-ANTHROPIC_API_KEY  Anthropic API key (Phase 2 fallback, optional until needed)
+MS365_CLIENT_ID    Azure AD app client ID (for email drafts)
+MS365_CLIENT_SECRET Azure AD app client secret
+MS365_REFRESH_TOKEN OAuth refresh token for Max's mailbox
 ```
 
 ## What OpenClaw is NOT
